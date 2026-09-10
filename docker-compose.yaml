@@ -1,0 +1,174 @@
+# The whole marketing research agent: cockpit, its own harness, search, and
+# page-fetching. One file, one command:
+#
+#     cp .env.example .env   # fill in the keys, first time only
+#     docker compose up -d --build
+#     open http://localhost:8080
+#
+#     docker compose down    # stop it; the volumes keep your runs
+#
+# Four containers, three volumes. Nothing on the host, nothing in systemd,
+# nothing that has to be running when you are not using it.
+name: mra
+
+services:
+  # Stage 1 is a web-search agent, so its search tool matters more than most.
+  # SearXNG is a self-hosted, free metasearch engine — one container, no API
+  # key, no per-query cost. It aggregates Google/Bing/DuckDuckGo/etc without
+  # sending your queries to any single one of them as the vendor of record.
+  #
+  # Search only: SearXNG does not fetch page content, only search results.
+  # That's what Firecrawl below is for.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: mra-searxng
+    restart: on-failure
+    expose: ["8080"]              # container network only; never published
+    volumes:
+      # `use_default_settings: true` inside — a small override, not a fork of
+      # SearXNG's own config. See the file for what had to change and why.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      # Real secret, not the placeholder committed in settings.yml.
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+
+  # The researcher's own hermes. Same image as the chat harness, a *separate
+  # instance*: its own state.db, its own long-term memory, its own skills.
+  #
+  # That separation is the reason this service exists at all. The researcher's
+  # entire input is fetched from the open web and a fetched page can contain
+  # instructions, so it must not share a gateway with the agent that holds your
+  # chat history. See ../setup.md §5a.
+  hermes:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    container_name: mra-hermes
+    # Not `unless-stopped`: this stack is on-demand, so it should survive a
+    # crash mid-run (a run is ~25 minutes) without resurrecting itself days
+    # after you brought it down.
+    restart: on-failure
+    expose: ["8642"]              # container network only; never published
+    depends_on: [searxng]
+    volumes:
+      # HERMES_HOME inside the image. Its own volume, so nothing here can see
+      # or touch ~/.hermes on the host.
+      - hermes_home:/opt/data
+      # The corpus: raw fetched bodies, written here by the agent's shell tool.
+      # `mra` mounts the same volume read-only.
+      - corpus:/corpus
+    environment:
+      # Files the container creates land as this uid/gid. Only matters if you
+      # bind-mount the volumes to host paths.
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      # The OpenAI-compatible API server, which is what the runs API lives on.
+      # 0.0.0.0 is safe *because* of `expose:` above — the port exists only on
+      # this compose network. Publishing it would expose an unauthenticated-
+      # looking agent endpoint to the host; don't.
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${HERMES_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # Search: SearXNG, by service name on this network. Page content:
+      # Firecrawl's cloud API — SearXNG cannot fetch a page, only find one.
+      # Leave FIRECRAWL_API_KEY blank and web_extract fails outright, which is
+      # more useful than silently falling back to a slower, worse
+      # browser-driven fetch (see setup.md §8's ddgs incident).
+      #
+      # Setting these two env vars is not enough on its own — see the
+      # `hermes-config` service below for why and how that gap is closed.
+      - SEARXNG_URL=http://searxng:8080
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+      # The agent's shell tool runs *inside this container*, which is the
+      # sandbox. The alternative — TERMINAL_ENV=docker — would need the host's
+      # docker socket mounted in, and a socket is a root shell on the host.
+      # SEC-001 moved agent commands off the host; this keeps them off it.
+      - TERMINAL_ENV=local
+    command: ["gateway", "run"]
+
+  # A one-shot fixup, not a service: it runs once, edits a file, and exits.
+  # `docker compose ps` showing it as "Exited (0)" is success, not a crash.
+  #
+  # hermes decides which search/extract backend to actually use by reading
+  # `web.search_backend` / `web.extract_backend` from its own config.yaml —
+  # there is no env var for this, so SEARXNG_URL and FIRECRAWL_API_KEY above
+  # are necessary but not sufficient. Worse: with both configured, hermes's
+  # auto-detect prefers Firecrawl for search too, and SearXNG never gets used.
+  # This container points each capability at the right backend, once, so
+  # nobody has to remember to run it by hand after every fresh volume.
+  #
+  # Shares hermes's home volume rather than talking to the running gateway —
+  # `hermes config set` edits config.yaml directly, no API call involved, so
+  # this can run as its own short-lived container. `depends_on: [hermes]`
+  # only orders container start, not full boot, but that is enough here:
+  # s6-overlay's cont-init (which seeds config.yaml if absent) completes
+  # before hermes's own supervised gateway process starts, so this container
+  # starting after that point always finds config.yaml already in place.
+  hermes-config:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    container_name: mra-hermes-config
+    restart: "no"
+    depends_on: [hermes]
+    volumes:
+      - hermes_home:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    command:
+      - sh
+      - -c
+      - >-
+        hermes config set web.search_backend searxng &&
+        hermes config set web.extract_backend firecrawl &&
+        echo "[hermes-config] search=searxng extract=firecrawl — done"
+
+  mra:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mra:latest
+    container_name: mra
+    restart: on-failure
+    depends_on: [hermes]
+    # Bound to 127.0.0.1, not 0.0.0.0: with no password set (MRA_APP_PASSWORD_HASH
+    # below) anyone on your network would otherwise reach an unauthenticated
+    # agent with web access and a shell.
+    #
+    # This line is what makes today's answer "reach it directly in a browser"
+    # rather than "through a reverse proxy" — the right choice for one person
+    # on one laptop. It is also the one line that changes on the day this
+    # moves behind a TLS-terminating proxy (Caddy, on the VPS): a published
+    # host port and a reverse-proxied container are two different network
+    # shapes, and that day's setup will say so rather than silently reusing
+    # this file unmodified.
+    ports: ["127.0.0.1:8080:8000"]
+    volumes:
+      - mra_data:/data
+      # Read-only on purpose: the corpus is scraped from the open web, so this
+      # is data the app must never be able to change or execute.
+      - corpus:/corpus:ro
+    environment:
+      - MRA_APP_USER=${MRA_APP_USER:-ash}
+      - MRA_APP_PASSWORD_HASH=${MRA_APP_PASSWORD_HASH:-}
+      - MRA_JWT_SECRET=${MRA_JWT_SECRET}
+      # http://localhost cannot set a Secure cookie — a browser silently drops
+      # it, so login would appear to succeed and then immediately log you back
+      # out. .env.example sets this to false for exactly that reason; flip it
+      # back to true (the default here) the day this sits behind real TLS.
+      - MRA_COOKIE_SECURE=${MRA_COOKIE_SECURE:-true}
+      - MRA_DATABASE_PATH=/data/research.db
+      # By service name on this network. No bridge-gateway address, no ufw
+      # rule, no host process — the reason everything-in-docker is simpler.
+      - MRA_HERMES_BASE_URL=http://hermes:8642/v1
+      - MRA_HERMES_API_KEY=${HERMES_API_KEY}
+      - MRA_HERMES_SESSION_KEY=research
+      - MRA_MODEL=${MRA_MODEL:-}
+      - MRA_CORPUS_PATH=/corpus
+
+volumes:
+  # Runs, events and packets. Losing this loses your research history.
+  mra_data: {}
+  # The harness's own state: sessions, long-term memory, skills, config.
+  hermes_home: {}
+  # Raw fetched bodies, content-addressed. `docker compose exec hermes ls
+  # /corpus/runs` to look inside.
+  corpus: {}

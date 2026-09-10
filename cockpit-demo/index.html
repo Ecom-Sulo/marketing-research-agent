@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Research Cockpit</title>
+<style>
+  :root{
+    --bg:#0d1016; --panel:#141821; --panel-2:#191e29; --line:#242b3a;
+    --ink:#e7eaf1; --dim:#98a2b6; --faint:#6b7688;
+    --accent:#6ea8fe; --accent-soft:#16233c;
+    --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --infer:#c084fc;
+    --r:10px; color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);
+    font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  button{font:inherit;cursor:pointer}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#2b3243;border-radius:9px}
+
+  /* ---------- shell ---------- */
+  .app{display:flex;flex-direction:column;height:100vh}
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;
+    border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}
+  .brand{font-weight:650;letter-spacing:-.01em}
+  .tabs{display:flex;gap:2px;margin-left:6px}
+  .tab{background:none;border:0;color:var(--dim);padding:6px 12px;border-radius:8px}
+  .tab.on{background:var(--accent-soft);color:var(--ink)}
+  .subject{margin-left:auto;display:flex;align-items:center;gap:10px;color:var(--dim);font-size:13px}
+  .chip{border:1px solid var(--line);background:var(--panel-2);border-radius:999px;padding:3px 10px;font-size:12px}
+  .btn{background:var(--accent);color:#0b1020;border:0;border-radius:8px;padding:7px 14px;font-weight:600}
+  .btn.ghost{background:transparent;color:var(--dim);border:1px solid var(--line);font-weight:500}
+  .btn.ghost:hover{color:var(--ink);border-color:var(--accent)}
+  .btn.warn{background:var(--warn);color:#231a02}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+
+  .main{flex:1;display:grid;grid-template-columns:230px 1fr 380px;min-height:0}
+  .col{min-height:0;overflow-y:auto;padding:14px}
+  .col.mid{display:flex;flex-direction:column;overflow:hidden}
+  .col.mid .lanes{flex:0 0 auto;overflow-y:auto;max-height:34vh}
+  .col.mid .trace{flex:1;max-height:none}
+  .col+.col{border-left:1px solid var(--line)}
+  h3{margin:0 0 10px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  h3 .n{color:var(--dim);text-transform:none;letter-spacing:0;font-weight:400}
+
+  /* ---------- stages ---------- */
+  .stage{display:flex;gap:9px;padding:7px 8px;border-radius:8px;align-items:flex-start}
+  .stage.active{background:var(--accent-soft)}
+  .dot{width:9px;height:9px;border-radius:50%;background:#39415a;margin-top:6px;flex:0 0 auto}
+  .stage.done .dot{background:var(--ok)}
+  .stage.active .dot{background:var(--accent);box-shadow:0 0 0 4px rgba(110,168,254,.18)}
+  .stage.blocked .dot{background:var(--warn);box-shadow:0 0 0 4px rgba(251,191,36,.18)}
+  .stage .t{font-size:13px}
+  .stage .s{font-size:11.5px;color:var(--faint)}
+  .stage.done .s{color:var(--ok)}
+  .gate-row{margin:6px 0;padding:7px 8px;border:1px dashed var(--line);border-radius:8px}
+  .gate-row.blocked{border-color:var(--warn);background:rgba(251,191,36,.07)}
+
+  /* ---------- activity ---------- */
+  .now{display:flex;align-items:center;gap:10px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--r);padding:11px 13px;margin-bottom:12px}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:p 1.1s infinite;flex:0 0 auto}
+  @keyframes p{0%,100%{opacity:.25}50%{opacity:1}}
+  .now .txt{flex:1;min-width:0}
+  .now .txt b{font-weight:600}
+  .now .sub{color:var(--faint);font-size:12px}
+
+  .lanes{display:grid;gap:7px;margin-bottom:14px}
+  .lane{display:flex;align-items:center;gap:9px;background:var(--panel);
+    border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:12.5px}
+  .lane .st{width:56px;flex:0 0 auto;font-size:11px;letter-spacing:.03em}
+  .lane.fetch .st{color:var(--accent)}
+  .lane.ok .st{color:var(--ok)}
+  .lane.rej .st{color:var(--bad)}
+  .lane .url{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+  .lane .kind{flex:0 0 auto;color:var(--faint);font-size:11px}
+  .bar{height:2px;background:#232a39;border-radius:2px;overflow:hidden;margin-top:5px}
+  .bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .25s linear}
+
+  .trace{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+    padding:12px 14px;font-size:12.5px;color:var(--dim);max-height:270px;overflow-y:auto}
+  .trace p{margin:0 0 7px}
+  .trace .tag{color:var(--faint);font-family:ui-monospace,Menlo,monospace;font-size:11px;margin-right:6px}
+  .trace a{color:var(--accent);text-decoration:none;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+  .trace .rule{color:var(--infer)}
+
+  /* ---------- findings ---------- */
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 11px}
+  .card .v{font-size:21px;font-weight:650;font-variant-numeric:tabular-nums}
+  .card .l{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
+  .card.ev .v{color:var(--ok)} .card.inf .v{color:var(--infer)} .card.gap .v{color:var(--warn)}
+
+  .grid{display:grid;grid-template-columns:auto repeat(5,1fr);gap:3px;font-size:10px;margin-bottom:6px}
+  .grid .h{color:var(--faint);text-align:center;padding:2px 0;font-size:9.5px}
+  .grid .rh{color:var(--dim);padding-right:6px;text-align:right;font-size:10.5px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:92px}
+  .cell{height:24px;border-radius:4px;background:#1b2130;border:1px solid #232b3c}
+  .cell.ev{background:rgba(74,222,128,.24);border-color:rgba(74,222,128,.5)}
+  .cell.inf{background:rgba(192,132,252,.22);border-color:rgba(192,132,252,.5)}
+  .cell.no{background:repeating-linear-gradient(45deg,#171d29,#171d29 3px,#1b2130 3px,#1b2130 6px)}
+  .legend{display:flex;gap:12px;font-size:11px;color:var(--faint);margin-bottom:14px}
+  .sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+
+  .item{border-top:1px solid var(--line);padding:8px 0;font-size:12.5px}
+  .item:first-of-type{border-top:0}
+  .item .q{color:var(--ink)}
+  .item .src{color:var(--faint);font-size:11px;margin-top:3px}
+  .pill{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--dim);margin-left:6px}
+  .pill.ev{color:var(--ok);border-color:rgba(74,222,128,.4)}
+  .pill.inf{color:var(--infer);border-color:rgba(192,132,252,.4)}
+
+  /* ---------- judgements ---------- */
+  .judge{background:rgba(192,132,252,.08);border:1px solid rgba(192,132,252,.34);
+    border-radius:9px;padding:9px 11px;margin-bottom:7px;font-size:12.5px}
+  .judge .w{color:var(--infer);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+  .judge .used{color:var(--faint);font-size:11px;margin-top:5px}
+
+  /* ---------- modal ---------- */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);display:grid;place-items:center;z-index:40;padding:20px}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    width:min(620px,100%);padding:20px;max-height:88vh;overflow-y:auto}
+  .modal h2{margin:0 0 4px;font-size:17px}
+  .modal .lede{color:var(--dim);font-size:13px;margin:0 0 14px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);
+    background:var(--panel-2);border-radius:9px;padding:10px 12px;margin-bottom:7px;cursor:pointer}
+  .opt:hover{border-color:var(--accent)}
+  .opt.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .opt input{margin-top:3px}
+  .opt .t{font-size:13px}
+  .opt .d{color:var(--faint);font-size:11.5px}
+  textarea{width:100%;background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+    border-radius:9px;padding:10px;resize:vertical;min-height:74px;outline:none;font:inherit}
+  textarea:focus{border-color:var(--accent)}
+  .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+  .crit{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:13px}
+  .crit:first-of-type{border-top:0}
+  .crit .ev{color:var(--faint);font-size:11.5px}
+  .yes{color:var(--ok)} .no{color:var(--bad)}
+  .empty{color:var(--faint);font-size:12.5px;font-style:italic}
+  @media(max-width:1100px){.main{grid-template-columns:1fr}.col+.col{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <span class="brand">agentchat</span>
+    <div class="tabs">
+      <button class="tab">Chat</button>
+      <button class="tab on">Research</button>
+    </div>
+    <div class="subject">
+      <span class="chip" id="subject">MagnaCalm — magnesium glycinate subscription</span>
+      <span class="chip" id="clock">00:00</span>
+      <button class="btn ghost" id="intervene" disabled>Step in</button>
+      <button class="btn" id="start">Start run</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="col">
+      <h3>Stages</h3>
+      <div id="stages"></div>
+      <h3 style="margin-top:18px">Run</h3>
+      <div style="font-size:12px;color:var(--dim)">
+        <div>Harness <span style="color:var(--ink)">hermes-agent</span></div>
+        <div>Model <span style="color:var(--ink)">deepseek-v4-pro</span></div>
+        <div>Skill <span style="color:var(--ink)">research-compartment v1.0</span></div>
+        <div id="cost" style="margin-top:6px">Spend <span style="color:var(--ink)">$0.00</span></div>
+      </div>
+    </div>
+
+    <div class="col mid">
+      <h3>Now</h3>
+      <div class="now">
+        <span class="pulse" id="pulse"></span>
+        <div class="txt"><b id="nowTitle">Idle</b><div class="sub" id="nowSub">Press “Start run” to begin</div></div>
+      </div>
+      <h3>Crawling <span class="n" id="laneCount"></span></h3>
+      <div class="lanes" id="lanes"><div class="empty">No active fetches</div></div>
+      <h3>Reasoning trace</h3>
+      <div class="trace" id="trace"><p class="empty">Trace appears here as the agent works.</p></div>
+    </div>
+
+    <div class="col">
+      <h3>Findings</h3>
+      <div class="cards">
+        <div class="card"><div class="v" id="mSrc">0</div><div class="l">sources</div></div>
+        <div class="card ev"><div class="v" id="mEv">0</div><div class="l">evidenced</div></div>
+        <div class="card inf"><div class="v" id="mInf">0</div><div class="l">inferred</div></div>
+        <div class="card gap"><div class="v" id="mGap">0</div><div class="l">gaps</div></div>
+      </div>
+
+      <h3>Angle map <span class="n">avatar × awareness</span></h3>
+      <div class="grid" id="grid"></div>
+      <div class="legend">
+        <span><i class="sw" style="background:rgba(74,222,128,.5)"></i>evidenced</span>
+        <span><i class="sw" style="background:rgba(192,132,252,.5)"></i>inferred</span>
+        <span><i class="sw" style="background:#1b2130"></i>empty</span>
+      </div>
+
+      <h3>Voice of customer</h3>
+      <div id="voc"><p class="empty">Nothing yet.</p></div>
+
+      <h3 style="margin-top:16px">Gaps <span class="n">what it could not find</span></h3>
+      <div id="gaps"><p class="empty">Nothing yet.</p></div>
+
+      <h3 style="margin-top:16px">Your standing judgements <span class="n" id="jCount"></span></h3>
+      <div id="judgements"><p class="empty">None yet. Use “Step in” to correct the agent mid-run.</p></div>
+    </div>
+  </div>
+</div>
+<div id="modalRoot"></div>
+<script src="./demo.js"></script>
+</body>
+</html>

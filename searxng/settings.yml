@@ -1,0 +1,20 @@
+# Minimal override, merged onto SearXNG's own defaults (use_default_settings).
+# Two things had to change from stock, both confirmed against the real image
+# rather than assumed:
+#
+# 1. `formats` ships as `[html]` only. hermes's SearXNG provider calls
+#    `/search?format=json` — without `json` added here, every search from
+#    hermes gets refused by SearXNG itself, and it looks like a hermes bug.
+# 2. `secret_key` ships as a public placeholder. SEARXNG_SECRET (set in
+#    docker-compose.yaml) overrides it at runtime, so the literal value below
+#    is never actually used — it just has to be present.
+use_default_settings: true
+
+server:
+  secret_key: "ultrasecretkey"   # overridden by SEARXNG_SECRET at runtime
+  limiter: false                # no rate-limiting; this instance has one caller
+
+search:
+  formats:
+    - html
+    - json

@@ -1,0 +1,17 @@
+# Append to ~/openwebui/Caddyfile, then set RESEARCH_DOMAIN in ~/openwebui/.env
+# and `docker compose restart caddy`.
+#
+# `research.vanis.ai` needs an A record pointing at 159.69.208.172 first. Caddy
+# gets the certificate on the first request; without the record it cannot, and
+# the failure presents as a TLS error rather than a DNS one.
+#
+# `flush_interval -1` is not optional. Without it Caddy buffers the SSE run
+# stream and a live run arrives in one lump at the end — which looks exactly
+# like a hung agent, and cost an afternoon the first time it happened on chat.
+{$RESEARCH_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy mra:8000 {
+		flush_interval -1
+	}
+}
