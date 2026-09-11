@@ -1,7 +1,8 @@
 # Spec — Stage 1: raw material collection
 
-**Status:** built (stage 1) · **Date:** 2026-09-10 · **Parents:** `spec.md` (what the
-researcher does), `cockpit-spec.md` (how you watch it) · **Engine:** hermes runs API
+**Status:** built (stage 1) · **Date:** 2026-09-11 · **Parents:** `spec.md` (what the
+researcher does), `cockpit-spec.md` (how you watch it) · **Engine:**
+`@earendil-works/pi-agent-core`, in-process (was: hermes runs API — see §6 and §8.2)
 
 This is the first of five stage specs. It is deliberately the narrowest one, because
 stage 1 is the only stage whose output is allowed to contain no thinking at all.
@@ -265,16 +266,35 @@ Constraints that keep it from becoming a finding:
 Two channels, because the two payloads have opposite shapes. Both constraints below
 were checked against the running system, not assumed.
 
-**Packet → the run's final output.** hermes's runs API streams `message.delta` and
-finishes with `run.completed` carrying `output`
-(`gateway/platforms/api_server_runs.py`). The packet is small, structured and
-control-plane-ish, so it rides the channel that is guaranteed to be there. The
-service extracts the last fenced ```json block from the output and validates it.
+**Packet → the run's final output.** The agent's assistant text, accumulated across
+every turn of the run. The packet is small, structured and control-plane-ish, so it
+rides the channel that is guaranteed to be there. The service extracts the last
+fenced ```json block from that text and validates it.
 
-**Raw bodies → a shared corpus volume.** Bodies are large and must be stored as the
-fetched artifact rather than a summary (`spec.md` §7). The agent writes them with the
-shell tool to `/corpus/runs/<run_id>/sources/<sha256>`; the service mounts the same
-host directory read-only and serves them for audit.
+> **Superseded (2026-09-11):** this used to read hermes's runs API — `message.delta`
+> and a `run.completed` carrying `output`. The harness is now in-process, so the
+> channel is `Agent.subscribe()`'s `message_end` events rather than an HTTP stream.
+> The *shape* of the contract is unchanged, deliberately: the packet is still the
+> last fenced JSON block in what the model wrote, and `packet.ts` did not change when
+> the engine did. One trap moved rather than disappearing — the agent re-emits the
+> **whole** assistant message on each `message_update`, so a naive "append every
+> delta" accumulates the output N times over. `runner.ts` tracks the text per message
+> and emits only the growth.
+
+**Raw bodies → a corpus directory.** Bodies are large and must be stored as the
+fetched artifact rather than a summary (`spec.md` §7). Every `web_fetch` writes the
+body it retrieved to `/corpus/runs/<run_id>/sources/<sha256>` and returns the id to
+cite; the service serves them back for audit.
+
+> **Superseded (2026-09-11):** the agent used to write these files itself, with the
+> shell tool, and set `archived: true` to say it had. That put a mechanical step on
+> the model's to-do list, and a model that skips it emits a packet claiming an
+> archive that does not exist — an audit trail that lies. Archiving now happens
+> inside the tool, before the agent sees the text, and the `sha256:` id it hands back
+> is the hash of the **exact bytes written**. That is what makes
+> `GET /api/research/runs/:id/sources/:sha` able to re-hash the file and report
+> `X-Corpus-Digest-Matches`; an id computed over any normalised form of the text
+> would make that check a permanent false negative.
 
 ### 6.1 Why not the obvious alternatives
 
@@ -294,26 +314,32 @@ host directory read-only and serves them for audit.
 
 **Set on the VPS on 2026-09-10**, not aspirational:
 
-A named Docker volume shared between the two containers of the same stack —
-no host path, no permissions to get wrong, identical locally and on the VPS:
+A named Docker volume — no host path, no permissions to get wrong, identical
+locally and on the VPS:
 
 ```yaml
 # docker-compose.yaml
-hermes:
-  volumes: [hermes_home:/opt/data, corpus:/corpus]        # writes
 mra:
-  volumes: [mra_data:/data, "corpus:/corpus:ro"]          # reads only
+  volumes: [mra_data:/data, corpus:/corpus]               # writes and reads
 ```
 
-Two notes, both in `setup.md` §5a:
+> **Superseded (2026-09-11):** this was two containers, with `mra` mounting
+> `corpus:/corpus:ro` because hermes owned the writes. One process owns both now, so
+> the mount is read-write. The property that made read-only worth having is kept
+> explicitly rather than by accident — see note 1.
 
-1. Everything in that container can write to `/corpus`, which is survivable
-   precisely because the container runs only the researcher. Nothing under
-   `/corpus` may ever be executed or read as instruction — `mra` mounts it
-   read-only and serves it as `text/plain` under a `default-src 'none'` CSP.
+Two notes:
+
+1. Nothing under `/corpus` may ever be executed or read as instruction. The only
+   writer is `web_fetch`, which writes a body and nothing else; the only reader is a
+   route that serves it as `text/plain` under `Content-Security-Policy: default-src
+   'none'` with `X-Content-Type-Options: nosniff`. The read-only mount used to be one
+   of the things enforcing that. Now the two ends of the path are.
 2. If the volume is absent, sources are emitted with `archived: false` and each one
    generates a gap. **The run still completes.** Degrading honestly beats blocking,
-   and the gap list is exactly where "we did not keep the evidence" belongs.
+   and the gap list is exactly where "we did not keep the evidence" belongs. The tool
+   catches the write failure and reports it in its own result, so the agent is told
+   rather than left to infer it.
 
 ---
 
@@ -349,30 +375,35 @@ is a first-class run field rather than a prompt paragraph.
 `cockpit-spec.md` §6 originally put this in agentchat as a second tab. That is
 **superseded** — the reasoning is recorded there, and the short version is that
 the researcher's whole input is fetched from the open web, so it gets its own
-process, its own database, its own login and **its own hermes gateway**.
+process, its own database and its own login.
+
+> **Superseded (2026-09-11):** "and its own hermes gateway". The harness is now
+> embedded in this process, so there is no second gateway. The isolation argument is
+> unchanged and is met by narrowing instead: the agent has exactly two tools, both
+> read-only against the web, and no shell. See §8.2.
 
 ```
 marketing-research-agent/
-  backend/mra/
-    settings.py    every env var, MRA_-prefixed
-    schema.py      the contract in §4 as pydantic models, extra="forbid"
-    packet.py      extract the fenced JSON from run output, validate, say why not
-    prompt.py      brief + admission policy + judgements -> stage-1 instructions
-    store.py       ResearchStore ABC + SqliteResearchStore
-    runner.py      RunSupervisor — one task per run, owns the upstream stream
-    hermes_runs.py HermesRunsClient — start, events(SSE), steer, stop, status
-    api.py         /api/research/*
-    app.py         auth + routes + the built SPA
+  server/src/
+    settings.ts    every env var, MRA_-prefixed
+    schema.ts      the contract in §4 as zod objects, .strict()
+    packet.ts      extract the fenced JSON from run output, validate, say why not
+    prompt.ts      brief + admission policy + judgements -> stage-1 instructions
+    tools.ts       web_search (SearXNG) + web_fetch (Firecrawl, auto-archiving)
+    store.ts       ResearchStore interface + SqliteResearchStore
+    runner.ts      RunSupervisor — one pi Agent per run, owns its event stream
+    api.ts         /api/research/*
+    app.ts         auth + routes + the built SPA
+    main.ts        process entry: recover, then serve
   frontend/src/
     App.tsx        the header-bar shell: subject chip, run clock, step-in, start
     StartRun.tsx   the brief as a modal — product + market, no URL field
     RunView.tsx    the three demo columns: rail, now/lanes/trace, findings
     StageRail.tsx  five stages + the gate; stage 1 live, its four nodes, curves
     StepIn.tsx     standing judgements
-  docker-compose.yaml   the whole stack, one file: cockpit, harness, search
-                         (SearXNG), page-fetching (Firecrawl's cloud API), and
-                         a one-shot `hermes-config` service that points
-                         hermes at both — `docker compose up` and done
+  docker-compose.yaml   the whole stack, one file: cockpit (harness inside)
+                         and search (SearXNG); page-fetching is Firecrawl's
+                         cloud API, called directly — `docker compose up`
   searxng/settings.yml   JSON output is off by default upstream; this turns
                          it on, which is the one override SearXNG needs
   deploy/
@@ -391,54 +422,75 @@ marketing-research-agent/
 | `GET /api/research/runs/{id}/sources/{sha}` | raw body from the corpus volume |
 | `GET /api/research/config` | model, corpus path, and whether it is mounted |
 
-**The service persists every event as it arrives.** hermes's SSE queue is
-in-memory, single-consumer and not replayable (`_run_streams` is an
-`asyncio.Queue`; a second subscriber splits the stream rather than duplicating
-it, and a late one misses what came before). So one background task per run owns
-the hermes stream and writes to SQLite; the browser reads the service's
-replayable stream. Getting this backwards gives you a cockpit that loses the run
-when you refresh the page.
+**The service persists every event as it arrives.** `Agent.subscribe()` is an
+in-memory, in-process callback: a listener that is not attached when an event fires
+never sees it, and there is no replay. So the supervisor subscribes for the life of
+the run and writes every event to SQLite before fanning it out; the browser reads
+the service's replayable stream. Getting this backwards gives you a cockpit that
+loses the run when you refresh the page. (Under hermes the same rule held for a
+different reason — its SSE queue was single-consumer, so a second tab *split* the
+stream rather than missing it. Same conclusion, and it is why `api.ts` subscribes
+before it replays.)
 
-**A run survives a restart.** `RunSupervisor.recover()` runs at startup and
-reconciles anything left non-terminal against `GET /v1/runs/{id}`. Re-attaching
-to the event stream is not an option — hermes drops a run's transport when its
-subscriber disconnects — but the status endpoint still answers, which is enough
-to record what happened instead of leaving a row that says `running` forever.
+**A run does not survive a restart.** `RunSupervisor.recover()` runs at startup and
+marks anything left non-terminal as `failed`, saying so.
 
-### 8.2 Two harnesses
+> **Superseded (2026-09-11):** this section previously read "**A run survives a
+> restart**" and reconciled non-terminal runs against `GET /v1/runs/{id}`. That was
+> true when the run executed inside a separate, longer-lived hermes container. The
+> agent now lives in this process and dies with it, so there is nothing upstream to
+> ask. Recording the death is the only honest option; inventing an outcome, or
+> leaving the row on `running` forever, are both worse. The operational consequence
+> is real and belongs in the README: **rebuild between runs, not during one.**
 
-**Same image, separate instance.** The assumption to correct: they are not one
-harness with two routes.
+### 8.2 One harness, and a much smaller one
+
+**Superseded (2026-09-11).** This section used to contrast agentchat's hermes with
+the researcher's own second hermes instance. There is no second instance now — and
+no hermes here at all.
 
 | | agentchat | the researcher |
 |---|---|---|
+| Engine | hermes gateway, over HTTP | `pi-agent-core`, in-process |
 | Runs as | systemd user unit on the host | a container in this stack |
-| Address | `172.28.0.1:8642` | `hermes:8642`, private compose network |
-| `HERMES_HOME` | `~/.hermes` | its own volume |
-| Memory key | `agentchat` | `research` |
-| Skills, sessions, `state.db` | its own | its own |
-| Agent shell runs in | a throwaway container (SEC-001) | its own container |
+| Model access | gateway's default route | a named OpenRouter model, always |
+| Memory across runs | long-term, keyed `agentchat` | none — each run starts clean |
+| Tools | shell, browser, files, memory | `web_search`, `web_fetch` |
+| Agent shell runs in | a throwaway container (SEC-001) | there is no shell |
 | Lifecycle | always on | up when you are using it |
+
+The row that carries the isolation argument is now **Tools**, not the address. A
+poisoned page reaching this agent finds two functions that read the web and a
+directory it can only append fetched bodies to. It cannot run a command, cannot read
+this service's database, and has no memory to persist an instruction into for the
+next run — the transcript is discarded when the run ends.
 
 This is the isolation that matters. `spec.md` §6.2 and `cockpit-spec.md` §8 both
 say the corpus is attacker-influenceable; a shared gateway would put a poisoned
 page one tool call away from the chat agent's long-term memory.
 
-**`TERMINAL_ENV=local` inside that container**, which reads alarmingly and is
-the right answer: in a container, "local" *is* the sandbox. The alternative
-would need the host's Docker socket mounted in, and a Docker socket is a root
-shell on the host — it would hand back exactly what SEC-001 took away.
+> **Superseded (2026-09-11):** what used to sit here was `TERMINAL_ENV=local` — the
+> reasoning being that inside a container, "local" *is* the sandbox, and the
+> alternative would need the host's Docker socket mounted in. Moot now: there is no
+> terminal tool to configure. The strongest version of that argument is the one that
+> survived, which is that the agent was never given a shell in the first place.
 
 ### 8.3 Crawl lanes, and what they are honestly worth
 
-`tool.started` carries `{tool, preview}` where preview is the primary argument,
-**truncated** for display (`agent/display.py: build_tool_preview`). So a lane's URL
-may be an ellipsis. Lanes are a liveness indicator; the packet is the record.
-The cockpit must never count sources from tool events — `web_extract` takes a list
-and previews only the first element.
+`tool.started` carries `{tool, preview, lane}`, where preview is the primary argument
+— the query for `web_search`, the url for `web_fetch`. Lanes are a liveness
+indicator; **the packet is the record.** The cockpit must never count sources from
+tool events: a fetch that fails emits a lane and contributes no source, and one that
+succeeds may still be rejected on admission.
 
-Tool → lane mapping: `web_search` (query), `web_extract` / `browser_navigate` (fetch),
-`terminal` (corpus write), `delegate_task` (subagent).
+Tool → lane mapping: `web_search` → `search`, `web_fetch` → `fetch`.
+
+> **Superseded (2026-09-11):** the preview used to arrive already truncated by
+> hermes (`agent/display.py: build_tool_preview`), so a lane's URL might be an
+> ellipsis, and `web_extract` took a *list* while previewing only its first element —
+> which is what made "never count sources from lanes" load-bearing rather than
+> stylistic. Both quirks are gone: the preview is built here, from the real argument,
+> and `web_fetch` takes exactly one url. The rule stays anyway, for the reason above.
 
 ---
 
@@ -475,15 +527,34 @@ tempting because the demo makes it look nearly free — it is not, it needs stag
 output to gate on.
 
 Ad-library and review scraping are named in `spec.md` §7 as the hostile ones. This
-build assumes **whatever hermes's existing web tools can reach**, and everything they
-cannot becomes a gap entry. That is the design, not a shortfall: a stage 1 that fails
-loudly on a source it cannot get is more useful than one that quietly returns less.
+build assumes **whatever SearXNG can find and Firecrawl can read**, and everything
+they cannot becomes a gap entry. That is the design, not a shortfall: a stage 1 that
+fails loudly on a source it cannot get is more useful than one that quietly returns
+less.
+
+> **Superseded (2026-09-11):** this read "whatever hermes's existing web tools can
+> reach". The clause was doing more work than it looked like — under hermes, "what
+> the tools can reach" depended on which backend the harness had auto-detected on
+> that machine, which is exactly how the first live run ended up driving a browser
+> (§10a). Naming the two services makes the boundary a property of this repo instead
+> of a property of the deployment. The principle is unchanged, and it is the reason
+> `web_fetch` throws on a Firecrawl error rather than returning an empty string: a
+> tool that fails silently turns a reachability limit into a fabricated absence.
 
 ---
 
 ## 10a. What the first live runs measured
 
 Written down because these were surprises, and `setup.md` carries the fixes.
+
+> **Historical (2026-09-10), and kept deliberately.** The first three findings below
+> are about the hermes stack and no longer describe how this runs — but they are the
+> argument that produced the port, so deleting them would delete the reasoning. The
+> pattern worth carrying forward: *every one of them was a silent degradation.* A
+> dead search tool that logged a WARNING and fell back to a browser; an extract
+> backend that did not exist; a reused session that inherited a poisoned transcript.
+> None of them failed loudly, and all three looked like a bad agent from the outside.
+> §10b records what the same run looks like now.
 
 **hermes's web tools were both dead.** `web_search` failed with `ddgs package is
 not installed` and `web_extract` with *"DuckDuckGo is a search-only backend and
@@ -522,15 +593,56 @@ a guess.
 
 ---
 
+## 10b. What the port measured
+
+First run on the in-process engine, 2026-09-11, `deepseek/deepseek-v4-flash-0731`,
+brief "MagnaCalm magnesium glycinate 400mg / UK". Cancelled at ~9 minutes rather than
+run to completion, so these are floor figures, not a full run:
+
+| | |
+|---|---|
+| Tool calls | 14 in the first 75 seconds (searches and fetches interleaved) |
+| Events persisted | 3,303 |
+| Bodies archived | 14 |
+| Tokens | 702,322 total — 288,918 input, 406,528 **cache reads**, 6,876 output |
+| Cost | $0.0265 |
+
+Three things this actually established, none of which were assumed:
+
+1. **Cache reads dominate.** 406k of 702k tokens were cache hits, because the run is
+   dozens of turns over a growing transcript and `Agent` is given a stable
+   `sessionId` per run. Cache reads are priced at roughly a quarter of input here, so
+   this is most of why a 700k-token run costs under three cents. A model without
+   prompt caching would cost several times this for identical work.
+2. **Usage must be summed across turns.** The final assistant message carries only its
+   own turn — reporting that number would understate a run by an order of magnitude.
+   `runner.ts` accumulates it, and §11's cost question is answerable because of that.
+3. **Cancel settles cleanly.** `run.stopping` → `run.cancelled`, `live: false`, usage
+   and partial output retained. The abort is distinguished from a failure by whether
+   the operator asked for it, which is why a stopped run does not read as a crash.
+
+The corpus audit was checked end to end on this run's real data:
+`GET /api/research/runs/:id/sources/:sha` returned the archived body with
+`X-Corpus-Digest-Matches: true`, `text/plain`, and `default-src 'none'`.
+
+---
+
 ## 11. Open questions
 
 - **Is three the right saturation threshold?** Instrumented, not assumed (§9.6).
-- **What does a stage-1 run cost, and how long does it take?** Unknown until the first
-  real run. It changes whether re-running a stage is cheap enough to be the default
-  correction mechanism.
+- ~~**What does a stage-1 run cost?**~~ **Answered, and the answer changes the
+  design.** ~700k tokens and $0.027 for nine minutes of gathering (§10b), most of it
+  cache reads. Re-running a stage is cheap enough to be the default correction
+  mechanism — which is the assumption the whole "correct it with a judgement and run
+  it again" loop rested on. Still open: what a run that reaches saturation on all
+  four nodes costs, since the measured run was cancelled.
 - ~~**One hermes session per run?**~~ **Answered: yes, and it is load-bearing.**
-  A reused session id makes a run inherit the previous one's transcript. See
-  §10a.
+  A reused session id made a run inherit the previous one's transcript (§10a). Moot
+  in its original form — there is no hermes and no `state.db` to load history from,
+  and each run builds a fresh `Agent` with an empty transcript, so isolation is now
+  the default rather than something to get right. The `sessionId` is still unique per
+  run, for a different reason: it is the prompt-cache key, and sharing it across runs
+  would mean cache hits against an unrelated transcript.
 - **Does the agent reliably emit a valid packet?** The whole design rests on it. If
   the first three runs need hand-fixing, the answer is a stricter prompt or a
   post-run repair pass — **not** a lenient validator.

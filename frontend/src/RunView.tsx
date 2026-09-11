@@ -10,6 +10,7 @@ import {
   type Source,
 } from './api';
 import StageRail, { NODE_LABELS } from './StageRail';
+import { ChatText } from './FileBox';
 
 /** Live fetch lanes, derived from tool events.
  *
@@ -108,6 +109,10 @@ export default function RunView({
     [events],
   );
 
+  // The deltas are chunks of one message; merge consecutive ones so fenced
+  // blocks that straddle several events still render as one box.
+  const traceRows = useMemo(() => groupEvents(events), [events]);
+
   if (!run) return <div className="empty">Loading run…</div>;
 
   const now = nowPanel(run, live, lastTool);
@@ -124,10 +129,12 @@ export default function RunView({
         <h3 style={{ marginTop: 18 }}>Run</h3>
         <div className="runmeta">
           <div>
-            Harness <span>hermes-agent</span>
+            Harness <span>pi-agent-core</span>
           </div>
           <div>
-            Model <span>{run.model || 'default route'}</span>
+            {/* Every run names its model now. The fallback is only ever hit by a
+                row written when a gateway default still existed. */}
+            Model <span>{run.model || 'unrecorded'}</span>
           </div>
           <div>
             Skill <span>research-compartment v1.0</span>
@@ -231,14 +238,27 @@ export default function RunView({
           </h3>
           <div className="trace" ref={traceRef}>
             {events.length === 0 && <p className="muted">Nothing yet.</p>}
-            {events.map((event) => (
-              <p key={event.id} className={traceClass(event.kind)}>
-                <span className="tag">
-                  {new Date(event.created_at).toLocaleTimeString()}
-                </span>
-                {traceText(event)}
-              </p>
-            ))}
+            {traceRows.map((row) =>
+              row.message ? (
+                <div key={row.id} className="chatmsg">
+                  <span className="tag">
+                    {new Date(row.events[0].created_at).toLocaleTimeString()}
+                  </span>
+                  <ChatText
+                    text={row.events
+                      .map((e) => String((e.payload as { delta?: string }).delta ?? ''))
+                      .join('')}
+                  />
+                </div>
+              ) : (
+                <p key={row.id} className={row.cls}>
+                  <span className="tag">
+                    {new Date(row.events[0].created_at).toLocaleTimeString()}
+                  </span>
+                  {traceText(row.events[0])}
+                </p>
+              ),
+            )}
           </div>
         </section>
 
@@ -296,7 +316,9 @@ export default function RunView({
         {run.status === 'invalid' && (
           <section>
             <h3>Raw output</h3>
-            <pre className="raw">{run.output}</pre>
+            <div className="trace">
+              <ChatText text={run.output} />
+            </div>
           </section>
         )}
       </div>
@@ -531,6 +553,35 @@ function traceClass(kind: string): string {
   return '';
 }
 
+interface TraceRow {
+  /** First event id of the row — events are unique, so the key survives grouping. */
+  id: number;
+  message: boolean;
+  cls: string;
+  events: RunEvent[];
+}
+
+/** One rendered row per event, except chat: consecutive `message.delta` chunks
+ *  are one message, and fences that span chunks need the whole of it. */
+function groupEvents(events: RunEvent[]): TraceRow[] {
+  const rows: TraceRow[] = [];
+  for (const event of events) {
+    const isMessage = event.kind === 'message.delta';
+    const last = rows[rows.length - 1];
+    if (isMessage && last?.message) {
+      last.events.push(event);
+    } else {
+      rows.push({
+        id: event.id,
+        message: isMessage,
+        cls: traceClass(event.kind),
+        events: [event],
+      });
+    }
+  }
+  return rows;
+}
+
 function traceText(event: RunEvent): string {
   const p = event.payload as Record<string, unknown>;
   switch (event.kind) {
@@ -544,8 +595,6 @@ function traceText(event: RunEvent): string {
       }`;
     case 'reasoning.available':
       return String(p.text ?? '');
-    case 'message.delta':
-      return String(p.delta ?? '');
     case 'run.steered':
       return `judgement applied mid-run — ${p.text ?? ''}`;
     case 'packet.ready':

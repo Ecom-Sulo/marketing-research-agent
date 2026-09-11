@@ -1,1 +1,10 @@
 .env
+spec-product.md
+
+# The server's build output and dependencies. `frontend/dist` is tracked on
+# purpose (the deploy copies it); `server/dist` is not — it is rebuilt by the
+# Dockerfile and by `npm run build`, and committing it makes every change a
+# double diff.
+node_modules/
+server/dist/
+*.tsbuildinfo

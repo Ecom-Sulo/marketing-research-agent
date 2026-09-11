@@ -6,23 +6,43 @@ RUN npm install
 COPY frontend/ ./
 RUN npm run build
 
-# --- stage 2: runtime -------------------------------------------------------
-FROM python:3.12-slim
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# --- stage 2: build the server ----------------------------------------------
+# Separate from the runtime stage so devDependencies (typescript, vitest) and
+# the build toolchain for better-sqlite3 never reach the final image.
+FROM node:22-alpine AS server
+WORKDIR /build
+# better-sqlite3 ships prebuilds for glibc, not musl, so alpine builds it from
+# source. Without these it fails partway through `npm ci` with a node-gyp error
+# that does not mention the missing compiler.
+RUN apk add --no-cache python3 make g++
+COPY server/package.json server/package-lock.json ./
+RUN npm ci
+COPY server/tsconfig.json ./
+COPY server/src ./src
+RUN npx tsc -p tsconfig.json
+
+# Reinstall production-only, so node_modules carries no build tooling. The
+# native better-sqlite3 binding compiled above is kept by the same command.
+RUN npm ci --omit=dev
+
+# --- stage 3: runtime -------------------------------------------------------
+FROM node:22-alpine
+ENV NODE_ENV=production
 WORKDIR /app
 
-COPY backend/pyproject.toml ./
-COPY backend/mra ./mra
-RUN pip install --no-cache-dir .
-
+COPY --from=server /build/node_modules ./node_modules
+COPY --from=server /build/dist ./dist
+COPY --from=server /build/package.json ./
 COPY --from=frontend /build/dist ./static
 
-RUN useradd --create-home --uid 10002 appuser && mkdir -p /data && chown appuser /data
+RUN addgroup -g 10002 appuser \
+ && adduser -D -u 10002 -G appuser appuser \
+ && mkdir -p /data && chown appuser:appuser /data
 USER appuser
 VOLUME ["/data"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4).status==200 else 1)"
+  CMD node -e "fetch('http://127.0.0.1:8000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["python", "-m", "mra"]
+CMD ["node", "dist/main.js"]

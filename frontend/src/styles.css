@@ -215,10 +215,32 @@ h3 .n { color: var(--dim); text-transform: none; letter-spacing: 0; font-weight:
 }
 .trace p.rule { color: var(--infer); }
 .trace p.bad { color: var(--bad); }
-.raw {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
-  padding: 12px; font-size: 11.5px; color: var(--dim);
-  max-height: 300px; overflow: auto; white-space: pre-wrap;
+
+/* ---------- chat content: plain text vs generated md/json ---------- */
+.trace .chatmsg { margin-bottom: 8px; }
+.trace .chatmsg .tag { display: block; margin: 0 0 3px; }
+.chat-txt { margin: 0 0 6px; white-space: pre-wrap; word-break: break-word; }
+.filebox {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; margin: 6px 0; overflow: hidden;
+}
+.filebox-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 8px 4px 10px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.filebox-lang {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--faint);
+}
+.filebox-copy {
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--dim); font-size: 10.5px; letter-spacing: 0.05em;
+  padding: 2px 8px; text-transform: uppercase;
+}
+.filebox-copy:hover { color: var(--ink); border-color: var(--accent); }
+.filebox-body {
+  margin: 0; padding: 9px 11px; font-size: 11.5px; color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto;
 }
 
 .kv { display: grid; gap: 3px; }

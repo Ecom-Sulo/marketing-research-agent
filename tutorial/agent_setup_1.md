@@ -173,3 +173,8 @@ you want.
 | `mra-hermes-config` shows `Exited (0)` | Not a fault — it's a one-shot setup job that finished |
 | Run fails instantly with a 401 / "invalid API key" | The `.env` key and the harness disagree. See `../setup.md` §5a for the one-command fix |
 | Login appears to work then logs you out | `MRA_COOKIE_SECURE` is set to `true`; it must be `false` for localhost |
+
+
+trendtracks mcp
+- monthly MMR subscribed products 
+- supplements
