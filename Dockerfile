@@ -35,11 +35,17 @@ COPY --from=server /build/dist ./dist
 COPY --from=server /build/package.json ./
 COPY --from=frontend /build/dist ./static
 
+# Both mount points must exist *in the image*, owned by the runtime user. Docker
+# seeds an empty named volume from the image directory it is mounted over,
+# ownership included — but only if that directory exists. Leave /corpus out and
+# the volume comes up root-owned, every web_fetch fails to archive with EACCES,
+# and every source in every packet reads `archived: false`. That shipped this
+# way once and was caught by the preflight in deploy/vps/deploy.sh.
 RUN addgroup -g 10002 appuser \
  && adduser -D -u 10002 -G appuser appuser \
- && mkdir -p /data && chown appuser:appuser /data
+ && mkdir -p /data /corpus && chown appuser:appuser /data /corpus
 USER appuser
-VOLUME ["/data"]
+VOLUME ["/data", "/corpus"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

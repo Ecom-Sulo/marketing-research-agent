@@ -1,7 +1,7 @@
 # marketing-research-agent
 
 The researcher, and the cockpit you watch it from. Live at
-**https://research.vanis.ai**.
+**https://marketing.vanis.ai**.
 
 Stage 1 of five is built. The rest is specified and not written.
 
@@ -83,7 +83,9 @@ server/src/
   main.ts         process entry: recover, then serve
 server/tests/     vitest; most of it is about what the validator refuses
 frontend/src/     React 18 + Vite, no UI framework
-deploy/           the Caddy snippet for research.vanis.ai
+deploy/           Caddy snippet for marketing.vanis.ai; vps/ holds the
+                  production compose, deploy.sh, change-password.sh and
+                  mra-snapshot.sh
 ```
 
 The engine is `@earendil-works/pi-agent-core`, embedded in this process rather
@@ -255,12 +257,40 @@ are about what the validator **refuses**, which is where the value is.
 
 ## Deploy
 
-Not done yet, and not urgent — this runs locally for now. When it happens, the
-one thing that changes is `mra`'s `ports:` line: a host-bound port makes sense
-for one person on one laptop, but the VPS reaches everything through Caddy on
-a private Docker network instead, the same as agentchat does. `../setup.md`
-§5a has the fuller plan (DNS, Caddy, what changes) from when this was designed
-to run that way; it will need a look once deployment is actually next.
+**https://marketing.vanis.ai** — on the same VPS as chat.vanis.ai, sharing
+nothing with it but Caddy. `../setup.md` §5a is the full account.
+
+```bash
+bash deploy/vps/deploy.sh                          # from the laptop
+ssh -t owui bash ~/mra-compose/change-password.sh  # set or change the login
+```
+
+`deploy.sh` runs the tests, builds the image **here**, preflights it, and ships
+it with `docker save | ssh docker load`. It never builds on the VPS: that box
+has ~2.4 GiB free and no swap, and a native compile plus a vite build is enough
+to wake the OOM killer — which may well pick agentchat.
+
+What differs from the local stack, all in `deploy/vps/docker-compose.yaml`:
+
+| | Local | VPS |
+|---|---|---|
+| Reached via | `127.0.0.1:8080` | Caddy, over a dedicated `edge` network |
+| Image | built from source | pre-built, `pull_policy: never` |
+| Restart | `on-failure` (on-demand) | `unless-stopped` |
+| Login | optional | **required** — compose refuses to start with an empty hash |
+| Backups | none | nightly, via `mra-snapshot.sh` |
+
+Two decisions worth knowing before you change them:
+
+- **`edge`, not `pa-compose_default`.** That bridge is the one hermes's
+  `172.28.0.1:8642` is firewalled open to. Verified after deploy: from `mra`,
+  `agentchat` does not resolve and hermes times out.
+- **The backup never stops `mra`.** agentchat's half of the nightly job stops
+  its container for a consistent copy; doing that here would kill a research
+  run every night. `VACUUM INTO` copies the live database consistently instead.
+
+**The deploy starts locked** — the stored hash is of a random password nobody
+knows. Nothing works until you run `change-password.sh`.
 
 ## What is not built
 

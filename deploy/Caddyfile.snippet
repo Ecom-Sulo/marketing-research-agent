@@ -1,14 +1,33 @@
-# Append to ~/openwebui/Caddyfile, then set RESEARCH_DOMAIN in ~/openwebui/.env
-# and `docker compose restart caddy`.
+# Appended to ~/pa-compose/Caddyfile on the VPS. The live Caddy belongs to the
+# agentchat stack; this stack only borrows it. See setup.md §5a.
 #
-# `research.vanis.ai` needs an A record pointing at 159.69.208.172 first. Caddy
-# gets the certificate on the first request; without the record it cannot, and
-# the failure presents as a TLS error rather than a DNS one.
+# Order matters, and each step exists because skipping it has a known failure:
 #
-# `flush_interval -1` is not optional. Without it Caddy buffers the SSE run
-# stream and a live run arrives in one lump at the end — which looks exactly
-# like a hung agent, and cost an afternoon the first time it happened on chat.
-{$RESEARCH_DOMAIN} {
+# 1. DNS FIRST. `marketing` A → 159.69.208.172 and AAAA → 2a01:4f8:1c1e:c964::1
+#    at Porkbun. Until then the name falls through the `*` wildcard to Porkbun's
+#    parking page. Add this block before DNS resolves and Caddy's ACME challenge
+#    fails and backs off with growing delays — which presents as a TLS error.
+#
+# 2. Caddy must be on the `edge` network or `mra:8000` does not resolve:
+#      docker network connect edge caddy     (live, no restart)
+#    and persisted in ~/pa-compose/docker-compose.yaml so a recreate keeps it.
+#
+# 3. Edit the Caddyfile IN PLACE (`cat new > Caddyfile`), never with a tool that
+#    writes a new file and renames it. It is a single-file bind mount: the
+#    container holds the original inode, so a replaced file is invisible to it
+#    and `caddy reload` silently re-reads the old config.
+#
+# 4. Apply with zero downtime to chat.vanis.ai:
+#      docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# Hostname is literal rather than `{$MRA_DOMAIN}`: an env var is read at
+# container start, so it would force a Caddy recreate — and a blip on chat — for
+# a value that never changes.
+#
+# `flush_interval -1` is not optional. Without it Caddy buffers the SSE event
+# stream and a live run arrives in one lump at the end, which looks exactly like
+# a hung agent.
+marketing.vanis.ai {
 	encode zstd gzip
 
 	reverse_proxy mra:8000 {

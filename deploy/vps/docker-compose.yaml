@@ -1,0 +1,71 @@
+# Production stack for https://marketing.vanis.ai. Lives on the VPS at
+# ~/mra-compose/docker-compose.yaml; deployed by deploy/vps/deploy.sh.
+#
+# Deliberately a separate file from ../../docker-compose.yaml rather than an
+# override of it. The local file publishes a port, builds from source, and is
+# on-demand; this one publishes nothing, runs a pre-built image, and stays up.
+# An override that has to *remove* things (`ports: !reset`, `build: !reset`)
+# is harder to read at 2am than two short files that each say what they are.
+#
+# See setup.md §5a.
+name: mra
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: mra-searxng
+    restart: unless-stopped
+    expose: ["8080"]              # private compose network only
+    volumes:
+      # A stock SearXNG refuses format=json, which is the only format
+      # web_search asks for. This file turns it on.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?SEARXNG_SECRET is not set}
+
+  mra:
+    image: mra:latest
+    # Built on the laptop and shipped with `docker load` — see deploy.sh for
+    # why it is never built here. `never` makes a missing image an error
+    # rather than a silent attempt to pull `mra` from Docker Hub.
+    pull_policy: never
+    container_name: mra
+    # Always-on, unlike the local stack. A restart still kills any run in
+    # flight — the agent lives in this process — and recover() marks it failed.
+    restart: unless-stopped
+    depends_on: [searxng]
+    # Never `ports:` — Docker publishes past ufw. Caddy reaches it over `edge`.
+    expose: ["8000"]
+    networks: [default, edge]
+    volumes:
+      - mra_data:/data
+      - corpus:/corpus
+    environment:
+      - MRA_APP_USER=${MRA_APP_USER:-ash}
+      # `:?` is the guard: compose refuses to start this stack at all with an
+      # empty hash, so an unauthenticated agent with paid API keys cannot end
+      # up on a public hostname by accident. Set it with change-password.sh.
+      - MRA_APP_PASSWORD_HASH=${MRA_APP_PASSWORD_HASH:?run change-password.sh}
+      - MRA_JWT_SECRET=${MRA_JWT_SECRET:?MRA_JWT_SECRET is not set}
+      - MRA_COOKIE_SECURE=true
+      - MRA_DATABASE_PATH=/data/research.db
+      - MRA_CORPUS_PATH=/corpus
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is not set}
+      - MRA_MODEL=${MRA_MODEL:-deepseek/deepseek-v4-flash-0731}
+      - SEARXNG_URL=http://searxng:8080
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:?FIRECRAWL_API_KEY is not set}
+
+networks:
+  # Shared with Caddy and nothing else. Not `pa-compose_default`: that is the
+  # bridge hermes's 172.28.0.1:8642 is firewalled open to, and the research
+  # agent reads the open web — it has no business one hop from the chat
+  # agent's harness. Created once with `docker network create edge`.
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  # Runs, events and packets. Captured nightly by owui-snapshot.sh.
+  mra_data: {}
+  # Raw fetched bodies, content-addressed. Captured nightly too.
+  corpus: {}

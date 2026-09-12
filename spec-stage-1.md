@@ -407,7 +407,9 @@ marketing-research-agent/
   searxng/settings.yml   JSON output is off by default upstream; this turns
                          it on, which is the one override SearXNG needs
   deploy/
-    Caddyfile.snippet   research.vanis.ai
+    Caddyfile.snippet   marketing.vanis.ai (was research.vanis.ai — renamed at deploy)
+    vps/                production compose, deploy.sh, change-password.sh,
+                         mra-snapshot.sh — see ../setup.md §5a
 ```
 
 | Endpoint | Does |
